@@ -22,10 +22,10 @@ import pb "go.etcd.io/etcd/raft/raftpb"
 // might need to truncate the log before persisting unstable.entries.
 type unstable struct {
 	// the incoming unstable snapshot, if any.
-	snapshot *pb.Snapshot
+	snapshot *pb.Snapshot //快照数据，该快照数据也是未写入Storage 中的。
 	// all entries that have not yet been written to storage.
-	entries []pb.Entry
-	offset  uint64
+	entries []pb.Entry //用于保存未写入Storage 中的Entry记录。
+	offset  uint64     //entries 中的第一条Entry 记录的索引值。
 
 	logger Logger
 }
@@ -125,13 +125,13 @@ func (u *unstable) truncateAndAppend(ents []pb.Entry) {
 		// after is the next index in the u.entries
 		// directly append
 		u.entries = append(u.entries, ents...)
-	case after <= u.offset:
+	case after <= u.offset: // 追加的记录 第一条index比 unstable entry第一条还小，直接替换
 		u.logger.Infof("replace the unstable entries from index %d", after)
 		// The log is being truncated to before our current offset
 		// portion, so set the offset and replace the entries
 		u.offset = after
 		u.entries = ents
-	default:
+	default: //  追加的记录 第一条index  介于unstable entry数组第一条和最后一条中间
 		// truncate to after and copy to u.entries
 		// then append
 		u.logger.Infof("truncate the unstable entries before index %d", after)

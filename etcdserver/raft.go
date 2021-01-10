@@ -172,7 +172,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 				r.tick()
 			case rd := <-r.Ready():
 				if rd.SoftState != nil {
-					newLeader := rd.SoftState.Lead != raft.None && rh.getLead() != rd.SoftState.Lead
+					newLeader := rd.SoftState.Lead != raft.None && rh.getLead() != rd.SoftState.Lead // 是否需要更新leader
 					if newLeader {
 						leaderChanges.Inc()
 					}

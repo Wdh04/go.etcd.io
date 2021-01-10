@@ -51,24 +51,25 @@ type Storage interface {
 	// Entries returns a slice of log entries in the range [lo,hi).
 	// MaxSize limits the total size of the log entries returned, but
 	// Entries returns at least one entry if any.
-	Entries(lo, hi, maxSize uint64) ([]pb.Entry, error)
+	Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) //在Storage 中记录了当前节点的所有Entry 记录， Entries 方法返回指定范围的Entry 记录（［ lo , hi)) ,
+	//第三个参数｛ maxSize ）限定了返回的Entry 集合的字节数上限
 	// Term returns the term of entry i, which must be in the range
 	// [FirstIndex()-1, LastIndex()]. The term of the entry before
 	// FirstIndex is retained for matching purposes even though the
 	// rest of that entry may not be available.
-	Term(i uint64) (uint64, error)
+	Term(i uint64) (uint64, error) //查询指定Index对应的Entry的Term值
 	// LastIndex returns the index of the last entry in the log.
 	LastIndex() (uint64, error)
 	// FirstIndex returns the index of the first log entry that is
 	// possibly available via Entries (older entries have been incorporated
 	// into the latest Snapshot; if storage only contains the dummy entry the
 	// first log entry is not available).
-	FirstIndex() (uint64, error)
+	FirstIndex() (uint64, error) //该方法返回Storage 中记录的第一条Entry的索号值，在该Entry之前的所有Entry都已经被包含进了最近的一次Snapshot中.
 	// Snapshot returns the most recent snapshot.
 	// If snapshot is temporarily unavailable, it should return ErrSnapshotTemporarilyUnavailable,
 	// so raft state machine could know that Storage needs some time to prepare
 	// snapshot and call Snapshot later.
-	Snapshot() (pb.Snapshot, error)
+	Snapshot() (pb.Snapshot, error) //返回最近一次生成的快照数据
 }
 
 // MemoryStorage implements the Storage interface backed by an
@@ -79,10 +80,10 @@ type MemoryStorage struct {
 	// goroutine.
 	sync.Mutex
 
-	hardState pb.HardState
+	hardState pb.HardState //主要封装 当前任期号、把票投给了谁  以及 当前最后一条已提交记录的index
 	snapshot  pb.Snapshot
 	// ents[i] has raft log position i+snapshot.Metadata.Index
-	ents []pb.Entry
+	ents []pb.Entry // entry数组  第一条（也就是ents[0]) 是快照的最后一条的index和trem。详见createSnapshot
 }
 
 // NewMemoryStorage creates an empty MemoryStorage.
@@ -95,7 +96,7 @@ func NewMemoryStorage() *MemoryStorage {
 
 // InitialState implements the Storage interface.
 func (ms *MemoryStorage) InitialState() (pb.HardState, pb.ConfState, error) {
-	return ms.hardState, ms.snapshot.Metadata.ConfState, nil
+	return ms.hardState, ms.snapshot.Metadata.ConfState, nil //ms.snapshot.Metadata.ConfState存放着当前集群中所有节点的ID
 }
 
 // SetHardState saves the current HardState.
@@ -107,7 +108,7 @@ func (ms *MemoryStorage) SetHardState(st pb.HardState) error {
 }
 
 // Entries implements the Storage interface.
-func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) {
+func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) { // lo hi 都是entry的index
 	ms.Lock()
 	defer ms.Unlock()
 	offset := ms.ents[0].Index
@@ -191,6 +192,7 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 // can be used to reconstruct the state at that point.
 // If any configuration changes have been made since the last compaction,
 // the result of the last ApplyConfChange must be passed in.
+// CreateSnapshot data是快照的data字段、 i是 要应用的快照最后一条index。 该方法完事儿 还要Compact，丢弃ents数组中i以前的entry。
 func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte) (pb.Snapshot, error) {
 	ms.Lock()
 	defer ms.Unlock()
@@ -213,8 +215,8 @@ func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte)
 }
 
 // Compact discards all log entries prior to compactIndex.
-// It is the application's responsibility to not attempt to compact an index
-// greater than raftLog.applied.
+// It is the application's responsibility to not attempt to compact an index greater than raftLog.applied.
+//  抛弃 小于 compactIndex的所有entry。不断尝试压缩 大于raftLog.applied的索引
 func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 	ms.Lock()
 	defer ms.Unlock()

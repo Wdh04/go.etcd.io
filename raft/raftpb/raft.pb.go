@@ -83,24 +83,24 @@ func (EntryType) EnumDescriptor() ([]byte, []int) { return fileDescriptorRaft, [
 type MessageType int32
 
 const (
-	MsgHup            MessageType = 0
-	MsgBeat           MessageType = 1
-	MsgProp           MessageType = 2
-	MsgApp            MessageType = 3
-	MsgAppResp        MessageType = 4
-	MsgVote           MessageType = 5
+	MsgHup            MessageType = 0 //当Follower节点的选举计时器超时，会发送MsgHup消息
+	MsgBeat           MessageType = 1 //Leader发送心跳，主要作用是探活，Follower接收到MsgBeat会重置选举计时器，防止Follower发起新一轮选举
+	MsgProp           MessageType = 2 //客户端发往到集群的写请求是通过MsgProp消息表示的
+	MsgApp            MessageType = 3 //当一个节点通过选举成为Leader时，会发送MsgApp消息
+	MsgAppResp        MessageType = 4 //MsgApp的响应消息
+	MsgVote           MessageType = 5 //当PreCandidate状态节点收到半数以上的投票之后，会发起新一轮的选举，即向集群中的其他节点发送MsgVote消息
 	MsgVoteResp       MessageType = 6
-	MsgSnap           MessageType = 7
-	MsgHeartbeat      MessageType = 8
-	MsgHeartbeatResp  MessageType = 9
-	MsgUnreachable    MessageType = 10
-	MsgSnapStatus     MessageType = 11
-	MsgCheckQuorum    MessageType = 12
-	MsgTransferLeader MessageType = 13
-	MsgTimeoutNow     MessageType = 14
-	MsgReadIndex      MessageType = 15
-	MsgReadIndexResp  MessageType = 16
-	MsgPreVote        MessageType = 17
+	MsgSnap           MessageType = 7  //Leader向Follower发送快照信息
+	MsgHeartbeat      MessageType = 8  //Leader发送的心跳消息
+	MsgHeartbeatResp  MessageType = 9  //Follower处理心跳回复返回的消息类型
+	MsgUnreachable    MessageType = 10 //Follower消息不可达
+	MsgSnapStatus     MessageType = 11 //如果Leader发送MsgSnap消息时出现异常，则会调用Raft接口发送MsgUnreachable和MsgSnapStatus消息
+	MsgCheckQuorum    MessageType = 12 //Leader检测是否保持半数以上的连接
+	MsgTransferLeader MessageType = 13 //Leader节点转移时使用，本地消息
+	MsgTimeoutNow     MessageType = 14 //Leader节点转移超时，会发该类型的消息，使Follower的选举计时器立即过期，并发起新一轮的选举
+	MsgReadIndex      MessageType = 15 //客户端发往集群的只读消息使用MsgReadIndex消息（只读的两种模式：ReadOnlySafe和ReadOnlyLeaseBased）
+	MsgReadIndexResp  MessageType = 16 //MsgReadIndex消息的响应消息
+	MsgPreVote        MessageType = 17 //PreCandidate状态下的节点发送的消息
 	MsgPreVoteResp    MessageType = 18
 )
 
@@ -313,6 +313,7 @@ func (m *Message) String() string            { return proto.CompactTextString(m)
 func (*Message) ProtoMessage()               {}
 func (*Message) Descriptor() ([]byte, []int) { return fileDescriptorRaft, []int{3} }
 
+//包含当前节点见过的最大的 term，以及在这个 term 给谁投过票，以及当前节点知道的commit index，这部分数据会持久化
 type HardState struct {
 	Term             uint64 `protobuf:"varint,1,opt,name=term" json:"term"`
 	Vote             uint64 `protobuf:"varint,2,opt,name=vote" json:"vote"`

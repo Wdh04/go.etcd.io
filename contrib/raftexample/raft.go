@@ -39,33 +39,56 @@ import (
 
 // A key-value stream backed by raft
 type raftNode struct {
-	proposeC    <-chan string            // proposed messages (k,v)
+	proposeC <-chan string // proposed messages (k,v)
+	// HTTP PUT 请求表示添加键值对数据，当收到HTTP PUT 请求时， httpKVAPI 会将请求中的键值信息通过proposeC通道传递给raftNode 实例进行处理。
 	confChangeC <-chan raftpb.ConfChange // proposed cluster config changes
-	commitC     chan<- *string           // entries committed to log (k,v)
-	errorC      chan<- error             // errors from raft session
+	//HTTP POST 请求表示集群节点修改的请求，当收到POST 请求时， httpKVAPI 会通过confChangeC 通道将修改的节点ID 传递给raftNode实例进行处理。
+	commitC chan<- *string // entries committed to log (k,v)
+	//raftNode 会将etcd-raft模块返回的待应用Entry记录（封装在Ready 实例中)写入commitC通道，另一方面，kvstore 会从commitC 通道中读取这些待应用的Entry 记录井保存其中的键值对信息。
+	errorC chan<- error // errors from raft session
+	//当etcd-raft模块关闭或是出现异常的时候，会通过errorC通道将该信息通知上层模块。
 
-	id          int      // client ID for raft session
-	peers       []string // raft peer URLs
-	join        bool     // node is joining an existing cluster
-	waldir      string   // path to WAL directory
-	snapdir     string   // path to snapshot directory
-	getSnapshot func() ([]byte, error)
-	lastIndex   uint64 // index of log at start
+	id    int      // client ID for raft session
+	peers []string // raft peer URLs
+	//当前集群中所有节点的地址，当前节点会通过该字段中保存的地址向集群中其他节点发送消息。
+	join bool // node is joining an existing cluster
+	//当前节点是否为后续加入到一个集群的节点
+	waldir      string                 // 存放WAL 日志文件的目录。
+	snapdir     string                 // 存放快照文件的目录
+	getSnapshot func() ([]byte, error) //用于获取快照数据的函数，在raft-example 示例中
+	//该函数会调用kvstore.getSnapshot（）方法获取kvstore.kvStore 字段的数据
+	lastIndex uint64 // index of log at start
+	//当回放WAL 日志结束之后，会使用使用该字段记录最后一 条Entry 记录的索引值。
 
-	confState     raftpb.ConfState
-	snapshotIndex uint64
-	appliedIndex  uint64
+	confState     raftpb.ConfState //用于记录当前的集群状态，该状态就是从前面介 绍的node . confstatec 通道中获取的。
+	snapshotIndex uint64           //保存当前快照的相关元数据，即快照所包含的最后一 条Entry 记录的索引值。
+	appliedIndex  uint64           //保存上层模块己应用的位置，即己应用的最后一条Entry 记录的索引值。
 
 	// raft backing for the commit/error channel
 	node        raft.Node
-	raftStorage *raft.MemoryStorage
-	wal         *wal.WAL
+	raftStorage *raft.MemoryStorage //前面已经介绍过Storage 接口及其具体实现
+	//MemoryStorage ，这里不再重复介绍。在raft-example 示例中，该MemoryStorage 实例
+	//与底层raftLog.storage 字段指向了同一个实例
+	wal *wal.WAL //负责WAL 日志的管理。当节点收到一条Entry 记录时，首先
+	//会将其保存到raftLog. unstable 中，之后会将其封装到Ready 实例中并交给上层模块发
+	//送给集群中的其他节点，并完成持久化。在raftexample 示例中， Entry 记录的持久化
+	//是将其写入raftLog.storage 中。在持久化之前， Entry 记录还会被写入WAL 日志文件
+	//中，这样就可以保证这些Entry 记录不会丢失。WAL 日志文件是顺序写入的，所以其
+	//写入性能不会影响节点的整体性能。
 
-	snapshotter      *snap.Snapshotter
+	snapshotter *snap.Snapshotter //负责管理快照数据， etcd-raft 模块并没有完
+	//成快照数据的管理，而是将其独立成一个单独的模块，在后面有单独的章节来介绍相关模块。
 	snapshotterReady chan *snap.Snapshotter // signals when snapshotter is ready
+	//主要用于初始化的过程中监昕snapshotter 实例是否创建完成， snapshotter 负责管理etcd-raft模块产生的快照数据，
 
-	snapCount uint64
-	transport *rafthttp.Transport
+	snapCount uint64 //两次生成快照之间间隔的Entry 记录数，即当前节点每处
+	//理一定数量的Entry 记录，就要触发一次快照数据的创建。每次生成快照时，即可释
+	//放掉一定量的WAL 日志及raftLog 中保存的Entry 记录，从而避免大量Entry记录带来
+	//的内存压力及大量的WAL 日志文件带来的磁盘压力； 另外，定期创建快照也能减少
+	//了节点重启时回放的WAL 日志数量，加速了启动时间。
+	transport *rafthttp.Transport //节点待发送的消息只是记录到了raft.msgs 中，etcd-raft模块并没有提供网络层的实现，
+	//而由上层模块决定两个节点之间如何通信。这样就为网络层的实现提供了更大的灵活性，
+	//例如，如果两个节点在同一台服务器中，我们完全可以使用共享内存方式实现两个节点的通信，并不一定非要通过网络设备完成
 	stopc     chan struct{} // signals proposal channel closed
 	httpstopc chan struct{} // signals http server to shutdown
 	httpdonec chan struct{} // signals http server shutdown complete
@@ -188,6 +211,7 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 	return true
 }
 
+//读取快照文件?
 func (rc *raftNode) loadSnapshot() *raftpb.Snapshot {
 	snapshot, err := rc.snapshotter.Load()
 	if err != nil && err != snap.ErrNoSnapshot {
@@ -228,7 +252,7 @@ func (rc *raftNode) replayWAL() *wal.WAL {
 	log.Printf("replaying WAL of member %d", rc.id)
 	snapshot := rc.loadSnapshot()
 	w := rc.openWAL(snapshot)
-	_, st, ents, err := w.ReadAll()
+	_, st, ents, err := w.ReadAll() //读取快照数据之后的全部WAL 日志数据，并获取状态信息
 	if err != nil {
 		log.Fatalf("raftexample: failed to read WAL (%v)", err)
 	}
@@ -275,14 +299,15 @@ func (rc *raftNode) startRaft() {
 	}
 	c := &raft.Config{
 		ID:                        uint64(rc.id),
-		ElectionTick:              10,
+		ElectionTick:              10, // election timeout 时间
 		HeartbeatTick:             1,
-		Storage:                   rc.raftStorage,
-		MaxSizePerMsg:             1024 * 1024,
-		MaxInflightMsgs:           256,
+		Storage:                   rc.raftStorage, //持久化存储 与etcd-raft模块的raftLog.storage共享一个MemoryStorage实例
+		MaxSizePerMsg:             1024 * 1024,    //每条消息最大长度
+		MaxInflightMsgs:           256,            //已发送但是 没收到响应的消息的最大个数
 		MaxUncommittedEntriesSize: 1 << 30,
 	}
 
+	// 初始化 并启动 etcd-raft模块
 	if oldwal {
 		rc.node = raft.RestartNode(c)
 	} else {
@@ -293,6 +318,7 @@ func (rc *raftNode) startRaft() {
 		rc.node = raft.StartNode(c, startPeers)
 	}
 
+	//创建Transport 实例并启动，它负责raft 节点之间通信的网络服务
 	rc.transport = &rafthttp.Transport{
 		Logger:      zap.NewExample(),
 		ID:          types.ID(rc.id),
@@ -303,15 +329,16 @@ func (rc *raftNode) startRaft() {
 		ErrorC:      make(chan error),
 	}
 
-	rc.transport.Start()
+	rc.transport.Start() //启动网络相关组件
+	//建立与集群中其他各个节点的连接
 	for i := range rc.peers {
 		if i+1 != rc.id {
 			rc.transport.AddPeer(types.ID(i+1), []string{rc.peers[i]})
 		}
 	}
 
-	go rc.serveRaft()
-	go rc.serveChannels()
+	go rc.serveRaft()     //启动一个goroutine ，其中会监听当前节点与集群中其他节点之间的网络连接
+	go rc.serveChannels() //启动后台goroutine 处理上层应用与底层eted-raft 模块的交互
 }
 
 // stop closes http, closes all channels, and stops raft.

@@ -28,38 +28,41 @@ import (
 // strewn around `*raft.raft`. Additionally, some fields are only used when in a
 // certain State. All of this isn't ideal.
 type Progress struct {
-	Match, Next uint64
+	Match, Next uint64 //Match对应Follower节点当前己经成功复制的Entry记录的索引值。 Next对应Follower节点下一个待复制的Entry记录的索引值。
 	// State defines how the leader should interact with the follower.
 	//
+	// StateProbe状态， leader发送replication message，每个心跳间隔最多一个
 	// When in StateProbe, leader sends at most one replication message
 	// per heartbeat interval. It also probes actual progress of the follower.
 	//
+	// StateReplicate状态， leader快速发送replication message，一个接一个
 	// When in StateReplicate, leader optimistically increases next
 	// to the latest entry sent after sending replication message. This is
 	// an optimized state for fast replicating log entries to the follower.
 	//
+	// StateSnapshot状态，leader应先发送snapshot然后停止发送任何replication message
 	// When in StateSnapshot, leader should have sent out snapshot
 	// before and stops sending any replication message.
-	State StateType
+	State StateType // 对应Follower 节点的复制状态
 
 	// PendingSnapshot is used in StateSnapshot.
 	// If there is a pending snapshot, the pendingSnapshot will be set to the
 	// index of the snapshot. If pendingSnapshot is set, the replication process of
 	// this Progress will be paused. raft will not resend snapshot until the pending one
 	// is reported to be failed.
-	PendingSnapshot uint64
+	PendingSnapshot uint64 //当前正在发送的快照数据信息。
 
 	// RecentActive is true if the progress is recently active. Receiving any messages
 	// from the corresponding follower indicates the progress is active.
 	// RecentActive can be reset to false after an election timeout.
 	//
 	// TODO(tbg): the leader should always have this set to true.
-	RecentActive bool
+	RecentActive bool //从当前Leader 节点的角度来看，该Progress 实例对应的Follower节点是否存活。
 
 	// ProbeSent is used while this follower is in StateProbe. When ProbeSent is
 	// true, raft should pause sending replication message to this peer until
 	// ProbeSent is reset. See ProbeAcked() and IsPaused().
-	ProbeSent bool
+	ProbeSent bool //ProbeSent为true ，应暂停发送到该节点replication message，直到呗reset。 See ProbeAcked() and IsPaused().
 
 	// Inflights is a sliding window for the inflight messages.
 	// Each inflight message contains one or more log entries.
@@ -73,7 +76,7 @@ type Progress struct {
 	// When a leader receives a reply, the previous inflights should
 	// be freed by calling inflights.FreeLE with the index of the last
 	// received entry.
-	Inflights *Inflights
+	Inflights *Inflights // 可能是这个字段  ----- ins ( * inflights 类型）： 记录了己经发送出去但未收到响应的消息信息。
 
 	// IsLearner is true if this progress is tracked for a learner.
 	IsLearner bool
@@ -141,6 +144,7 @@ func (pr *Progress) BecomeSnapshot(snapshoti uint64) {
 // MaybeUpdate is called when an MsgAppResp arrives from the follower, with the
 // index acked by it. The method returns false if the given n index comes from
 // an outdated message. Otherwise it updates the progress and returns true.
+// 收到MsgAppResp才会调， n为刚刚发给follower的msgIndex，若n是正常的需要更新的返回true，并Probe设为false（不暂停发送给那个peer）
 func (pr *Progress) MaybeUpdate(n uint64) bool {
 	var updated bool
 	if pr.Match < n {
@@ -169,28 +173,35 @@ func (pr *Progress) OptimisticUpdate(n uint64) { pr.Next = n + 1 }
 //
 // If the rejection is genuine, Next is lowered sensibly, and the Progress is
 // cleared for sending log entries.
+//maybeDecrTo()方法的两个参数都是MsgAppResp 消息携带的信息：
+// reject 是被拒绝MsgApp 消息的Index 字段值，
+// last 是被拒绝MsgAppResp 消息的RejectHint 字段值（即对应Follower 节点raftLog 中最后一条 Entry 记录的索引）
 func (pr *Progress) MaybeDecrTo(rejected, last uint64) bool {
 	if pr.State == StateReplicate {
 		// The rejection must be stale if the progress has matched and "rejected"
 		// is smaller than "match".
-		if rejected <= pr.Match {
+		if rejected <= pr.Match { //出现过时的MsgAppResp 消息，直接忽略
 			return false
 		}
 		// Directly decrease next to match + 1.
 		//
 		// TODO(tbg): why not use last if it's larger?
+		//／／根据前面对MsgApp 消息发送过程的分析，处于ProgressStateReplicate 状态时，发送MsgApp
+		//／／消息的同时会直接调用Progress.optimisticUpdate （）方法增加Next ，这就使得Next 可能会
+		//／／比Match 大很多，这里回退Next 至Match 位置，并在后面重新发送MsgApp 消息进行尝试
 		pr.Next = pr.Match + 1
 		return true
 	}
 
 	// The rejection must be stale if "rejected" does not match next - 1. This
 	// is because non-replicating followers are probed one entry at a time.
-	if pr.Next-1 != rejected {
+	if pr.Next-1 != rejected { //出现过时的MsgAppResp 消息，直接忽略
 		return false
 	}
 
+	//根据MsgAppResp 携带的信息重置Next   注意是 = ，不是 ==
 	if pr.Next = min(rejected, last+1); pr.Next < 1 {
-		pr.Next = 1
+		pr.Next = 1 //将Next 重直为l
 	}
 	pr.ProbeSent = false
 	return true

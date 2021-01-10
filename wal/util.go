@@ -69,6 +69,7 @@ func isValidSeq(lg *zap.Logger, names []string) bool {
 	return true
 }
 
+//读dirpath路径下所有文件的名字  并过滤出 合法的 .wal文件 的文件名
 func readWALNames(lg *zap.Logger, dirpath string) ([]string, error) {
 	names, err := fileutil.ReadDir(dirpath)
 	if err != nil {

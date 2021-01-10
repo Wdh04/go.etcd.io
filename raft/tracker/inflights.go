@@ -21,16 +21,16 @@ package tracker
 // ack is received.
 type Inflights struct {
 	// the starting index in the buffer
-	start int
+	start int //inflights. buffer 数组被当作一个环形数组使用， start 字段中记录buffer 中第一条MsgApp 消息的下标
 	// number of inflights in the buffer
-	count int
+	count int //当前inflights 实例中记录的MsgApp 消息个数。
 
 	// the size of the buffer
-	size int
+	size int //当前inflights 实例中能够记录的MsgApp 消息个数的上限
 
 	// buffer contains the index of the last entry
 	// inside one message.
-	buffer []uint64
+	buffer []uint64 //用来记录MsgApp 消息相关信息的数组，其中记录的是MsgApp 消息中最后一条Entry 记录的索引值
 }
 
 // NewInflights sets up an Inflights that allows up to 'size' inflight messages.
@@ -84,6 +84,7 @@ func (in *Inflights) grow() {
 }
 
 // FreeLE frees the inflights smaller or equal to the given `to` flight.
+// 释放 inflights 一直释放到 to
 func (in *Inflights) FreeLE(to uint64) {
 	if in.count == 0 || to < in.buffer[in.start] {
 		// out of the left side of the window
@@ -93,6 +94,7 @@ func (in *Inflights) FreeLE(to uint64) {
 	idx := in.start
 	var i int
 	for i = 0; i < in.count; i++ {
+		// 寻找第一条大于to的记录。（用于逻辑上释放环形数组缓存的内容，   内容为发出去的MsgApp并且没收到回应）
 		if to < in.buffer[idx] { // found the first large inflight
 			break
 		}

@@ -31,17 +31,17 @@ type raftLog struct {
 
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
-	committed uint64
+	committed uint64 //己提交的位置，即己提交的Entry记录中最大的索引值。
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
-	applied uint64
+	applied uint64 //己应用的位置，即己应用的Entry 记录中最大的索引值。其中committed和applied之间始终满足committed>=applied 这个不等式关系。
 
 	logger Logger
 
 	// maxNextEntsSize is the maximum number aggregate byte size of the messages
 	// returned from calls to nextEnts.
-	maxNextEntsSize uint64
+	maxNextEntsSize uint64 //nextEnts()方法能返回的最大字节数.
 }
 
 // newLog returns log using the given storage and default options. It
@@ -85,6 +85,7 @@ func (l *raftLog) String() string {
 
 // maybeAppend returns (0, false) if the entries cannot be appended. Otherwise,
 // it returns (last index of new entries, true).
+// index应该是 本次要插入ents之前  服务端的最后一条
 func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry) (lastnewi uint64, ok bool) {
 	if l.matchTerm(index, logTerm) {
 		lastnewi = index + uint64(len(ents))
@@ -103,6 +104,8 @@ func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry
 	return 0, false
 }
 
+//raftlog中追加记录，已提交的entry不可修改或重复append
+// 追加到 unstable中
 func (l *raftLog) append(ents ...pb.Entry) uint64 {
 	if len(ents) == 0 {
 		return l.lastIndex()
@@ -148,9 +151,10 @@ func (l *raftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the available entries for execution.
 // If applied is smaller than the index of snapshot, it returns all committed
 // entries after the index of snapshot.
+//将己提交且未应用的Entry 记录返回给上层模块
 func (l *raftLog) nextEnts() (ents []pb.Entry) {
-	off := max(l.applied+1, l.firstIndex())
-	if l.committed+1 > off {
+	off := max(l.applied+1, l.firstIndex()) //获取当前已经应用 记录的位置
+	if l.committed+1 > off {                //是否存在已提交未应用的entry
 		ents, err := l.slice(off, l.committed+1, l.maxNextEntsSize)
 		if err != nil {
 			l.logger.Panicf("unexpected error when getting unapplied entries (%v)", err)
@@ -276,10 +280,12 @@ func (l *raftLog) allEntries() []pb.Entry {
 // later term is more up-to-date. If the logs end with the same term, then
 // whichever log has the larger lastIndex is more up-to-date. If the logs are
 // the same, the given log is up-to-date.
+//lasti 和term 分别是Candidate 节点的最大记录索引位和最大任期号.  (当候选节点发起投票后 follower节点跟进isUpToDate判断是否投票给它)
 func (l *raftLog) isUpToDate(lasti, term uint64) bool {
 	return term > l.lastTerm() || (term == l.lastTerm() && lasti >= l.lastIndex())
 }
 
+// 看index i 和term是否匹配的上。没有改 index 算皮配不上
 func (l *raftLog) matchTerm(i, term uint64) bool {
 	t, err := l.term(i)
 	if err != nil {

@@ -23,7 +23,7 @@ message Entry {
 }
 
 message SnapshotMetadata {
-	optional ConfState conf_state = 1 [(gogoproto.nullable) = false];
+	optional ConfState conf_state = 1 [(gogoproto.nullable) = false];  //存放着当前集群中所有节点的ID
 	optional uint64    index      = 2 [(gogoproto.nullable) = false];
 	optional uint64    term       = 3 [(gogoproto.nullable) = false];
 }
@@ -59,21 +59,21 @@ message Message {
 	optional MessageType type        = 1  [(gogoproto.nullable) = false];
 	optional uint64      to          = 2  [(gogoproto.nullable) = false];
 	optional uint64      from        = 3  [(gogoproto.nullable) = false];
-	optional uint64      term        = 4  [(gogoproto.nullable) = false];
-	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false];
-	optional uint64      index       = 6  [(gogoproto.nullable) = false];
+	optional uint64      term        = 4  [(gogoproto.nullable) = false];  //发送消息的节点的Term值，0代表本地消息。
+	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false];  //该消息携带的entry数组的第一条entry的term
+	optional uint64      index       = 6  [(gogoproto.nullable) = false];  // 索引值，消息类型不同含义也不同。MsgApp消息中代表其entry数组中前一条记录的index。MsgAppResp中则为follower提示leader下次从那个位置开始发送entry。
 	repeated Entry       entries     = 7  [(gogoproto.nullable) = false];
-	optional uint64      commit      = 8  [(gogoproto.nullable) = false];
+	optional uint64      commit      = 8  [(gogoproto.nullable) = false];   //消息发送节点的提交位置 commitIndex
 	optional Snapshot    snapshot    = 9  [(gogoproto.nullable) = false];
-	optional bool        reject      = 10 [(gogoproto.nullable) = false];
-	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];
+	optional bool        reject      = 10 [(gogoproto.nullable) = false];  //主要用于响应类型的消息，表示是否拒绝收到的消息
+	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];  //在Follower 节点拒绝Leader 节点的消息之后，会在该字段记录一个Entry 索引值供Leader 节点。
 	optional bytes       context     = 12;
 }
 
 message HardState {
-	optional uint64 term   = 1 [(gogoproto.nullable) = false];
-	optional uint64 vote   = 2 [(gogoproto.nullable) = false];
-	optional uint64 commit = 3 [(gogoproto.nullable) = false];
+	optional uint64 term   = 1 [(gogoproto.nullable) = false]; //当前任期号
+	optional uint64 vote   = 2 [(gogoproto.nullable) = false]; // 票投给了哪个节点
+	optional uint64 commit = 3 [(gogoproto.nullable) = false]; // 最后一条提交记录的index
 }
 
 // ConfChangeTransition specifies the behavior of a configuration change with
