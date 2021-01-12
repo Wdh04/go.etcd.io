@@ -15,6 +15,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -25,12 +26,15 @@ import (
 
 // Handler for a http based key-value store backed by raft
 type httpKVAPI struct {
-	store       *kvstore
-	confChangeC chan<- raftpb.ConfChange
+	store       *kvstore           //store ： kvstore 实例在raft-example 示例中扮演了持久化存储的角色，用于保存用户提交的键值对信息。
+	confChangeC chan<- raftpb.ConfChange  //confChangeC ： 在raft-example 示例中，当用户发送POST （或DELETE ）请求时，会被认为是发送了一个集群节点增加（或删除）的
+	                                   //请求， httpKVAPI 会将该请求的信息写入confChangeC 通道，(正如上一小节所介绍的)， raftNode 实例会读取confChange 通道并进行相应处理。
 }
 
 func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := r.RequestURI
+	fmt.Println(key)
+	fmt.Println("---------------------")
 	defer r.Body.Close()
 	switch {
 	case r.Method == "PUT":

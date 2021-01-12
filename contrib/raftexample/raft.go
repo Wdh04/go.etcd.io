@@ -134,19 +134,23 @@ func (rc *raftNode) saveSnap(snap raftpb.Snapshot) error {
 	// must save the snapshot index to the WAL before saving the
 	// snapshot to maintain the invariant that we only Open the
 	// wal at previously-saved snapshot indexes.
+	// 快照元数据
 	walSnap := walpb.Snapshot{
 		Index: snap.Metadata.Index,
 		Term:  snap.Metadata.Term,
 	}
+	//WAL 会将上述快照的元数据信息封装成一条日志记录下来
 	if err := rc.wal.SaveSnapshot(walSnap); err != nil {
 		return err
 	}
 	if err := rc.snapshotter.SaveSnap(snap); err != nil {
 		return err
 	}
+	//根据快照的元数据信息，释放一些无用的WAL 日志文件的句柄
 	return rc.wal.ReleaseLockTo(snap.Metadata.Index)
 }
 
+//过滤待应用的entry
 func (rc *raftNode) entriesToApply(ents []raftpb.Entry) (nents []raftpb.Entry) {
 	if len(ents) == 0 {
 		return ents
@@ -155,6 +159,8 @@ func (rc *raftNode) entriesToApply(ents []raftpb.Entry) (nents []raftpb.Entry) {
 	if firstIdx > rc.appliedIndex+1 {
 		log.Fatalf("first index of committed entry[%d] should <= progress.appliedIndex[%d]+1", firstIdx, rc.appliedIndex)
 	}
+
+	//过滤掉已经应用过的entry
 	if rc.appliedIndex-firstIdx+1 < uint64(len(ents)) {
 		nents = ents[rc.appliedIndex-firstIdx+1:]
 	}
@@ -163,25 +169,30 @@ func (rc *raftNode) entriesToApply(ents []raftpb.Entry) (nents []raftpb.Entry) {
 
 // publishEntries writes committed log entries to commit channel and returns
 // whether all entries could be published.
+//raftNode 会将所有待应用记录写入commitC 通道中。后续kvstore 就可以读取commitC 通道并保存相应的键值对数据
 func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 	for i := range ents {
 		switch ents[i].Type {
 		case raftpb.EntryNormal:
 			if len(ents[i].Data) == 0 {
-				// ignore empty messages
+				// 如果Entry 记录的Data 为空， 则直接忽略该条Entry 记录
 				break
 			}
 			s := string(ents[i].Data)
 			select {
+			//将数据写入commitC 通道， kvstore 会读取从其中读取并记录相应的KV 值
 			case rc.commitC <- &s:
 			case <-rc.stopc:
 				return false
 			}
 
 		case raftpb.EntryConfChange:
-			var cc raftpb.ConfChange
+			var cc raftpb.ConfChange //将EntryConfChange 类型的记录封装成ConfChange
 			cc.Unmarshal(ents[i].Data)
+			//将ConfChange 实例传入底层的etcd - raft 组件
 			rc.confState = *rc.node.ApplyConfChange(cc)
+
+			//除了etcd-raft 组件中需要创建（或删除）对应的Progress 实例，网络层也需要做出相应的调整，即添加（或删除）相应的Peer 实例
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
@@ -197,9 +208,12 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 		}
 
 		// after commit, update appliedIndex
+		//处理完成之后，更新raftNode 记录的已应用位置，该值在过滤：已应用记录的entriesToApply ()
+		//方法及后面即将介绍的maybeTriggerSnapshot()方法中都有使用
 		rc.appliedIndex = ents[i].Index
 
 		// special nil commit to signal replay has finished
+		//此次应用的是否为重放的Entry 记录，如果是，且重放完成，则使用commitC通道通知kvstore
 		if ents[i].Index == rc.lastIndex {
 			select {
 			case rc.commitC <- nil:
@@ -355,6 +369,7 @@ func (rc *raftNode) stopHTTP() {
 	<-rc.httpdonec
 }
 
+//通知上层模块加载新生成的快照数据，并使用新快照的元数据更新raftNode 中的相应字段
 func (rc *raftNode) publishSnapshot(snapshotToSave raftpb.Snapshot) {
 	if raft.IsEmptySnap(snapshotToSave) {
 		return
@@ -366,8 +381,10 @@ func (rc *raftNode) publishSnapshot(snapshotToSave raftpb.Snapshot) {
 	if snapshotToSave.Metadata.Index <= rc.appliedIndex {
 		log.Fatalf("snapshot index [%d] should > progress.appliedIndex [%d]", snapshotToSave.Metadata.Index, rc.appliedIndex)
 	}
+	//使用commitC 通过知上层应用 加载新生成的快照数据
 	rc.commitC <- nil // trigger kvstore to load snapshot
 
+	//记录新快照的元数据
 	rc.confState = snapshotToSave.Metadata.ConfState
 	rc.snapshotIndex = snapshotToSave.Metadata.Index
 	rc.appliedIndex = snapshotToSave.Metadata.Index
@@ -375,29 +392,32 @@ func (rc *raftNode) publishSnapshot(snapshotToSave raftpb.Snapshot) {
 
 var snapshotCatchUpEntriesN uint64 = 10000
 
+//为了释放底层etcd-raft模块中无用的Entry 记录，节点每处理指定条数（默认是10000 条）
+//的记录之后，就会触发一次快照生成操作，相关实现在raftNode.maybeTriggerSnapshot()方法中，
 func (rc *raftNode) maybeTriggerSnapshot() {
-	if rc.appliedIndex-rc.snapshotIndex <= rc.snapCount {
+	if rc.appliedIndex-rc.snapshotIndex <= rc.snapCount {//检测处理的记录数是否足够，如果不足，则直接返回
 		return
 	}
 
 	log.Printf("start snapshot [applied index: %d | last snapshot index: %d]", rc.appliedIndex, rc.snapshotIndex)
+	//获取快照数据，在raftexample 示例中是获取kvstore 中记录的全部键值对数据，异常处理（略）
 	data, err := rc.getSnapshot()
 	if err != nil {
 		log.Panic(err)
 	}
-	snap, err := rc.raftStorage.CreateSnapshot(rc.appliedIndex, &rc.confState, data)
+	snap, err := rc.raftStorage.CreateSnapshot(rc.appliedIndex, &rc.confState, data)//创建Snapshot实例，同时也会将快照和元数据更新到raftLog .MemoryStorage中.
 	if err != nil {
 		panic(err)
 	}
-	if err := rc.saveSnap(snap); err != nil {
+	if err := rc.saveSnap(snap); err != nil {  //保存快照数据
 		panic(err)
 	}
 
-	compactIndex := uint64(1)
+	compactIndex := uint64(1) //计算压缩的位置， 压缩之后，该位置之前的全部记录都会被抛弃
 	if rc.appliedIndex > snapshotCatchUpEntriesN {
 		compactIndex = rc.appliedIndex - snapshotCatchUpEntriesN
 	}
-	if err := rc.raftStorage.Compact(compactIndex); err != nil {
+	if err := rc.raftStorage.Compact(compactIndex); err != nil {  //压缩raftLog 中保存的Entry 记录
 		panic(err)
 	}
 
@@ -455,6 +475,8 @@ func (rc *raftNode) serveChannels() {
 
 		// store raft entries to wal, then publish over commit channel
 		case rd := <-rc.node.Ready():
+			//将当前etcd raft 组件的状态信息，以及待持久化的Entry 记录先记录到WAL 日志文件中，
+			//即使之后宕机，这些信息也可以在节点下次启动时，通过前面回放WAL 日志的方式进行恢复。 WAL 记录日志的具体实现，
 			rc.wal.Save(rd.HardState, rd.Entries)
 			if !raft.IsEmptySnap(rd.Snapshot) {
 				rc.saveSnap(rd.Snapshot)
