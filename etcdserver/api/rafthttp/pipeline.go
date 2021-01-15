@@ -42,10 +42,11 @@ const (
 
 var errStopped = errors.New("stopped")
 
+//用于发送快照 这种重量级数据。
 type pipeline struct {
-	peerID types.ID
+	peerID types.ID //对方节点的ID  。 Transport的etcdserver.rafthttp.peer数组中只记录对方id，自己ID在Transport中记录
 
-	tr     *Transport
+	tr     *Transport //关联的rafthttp.Transport 实例。
 	picker *urlPicker
 	status *peerStatus
 	raft   Raft
@@ -53,7 +54,7 @@ type pipeline struct {
 	// deprecate when we depercate v2 API
 	followerStats *stats.FollowerStats
 
-	msgc chan raftpb.Message
+	msgc chan raftpb.Message //消息从该通道发入pipeline，然后pipeline再将消息发出。
 	// wait for the handling routines
 	wg    sync.WaitGroup
 	stopc chan struct{}
@@ -61,7 +62,7 @@ type pipeline struct {
 
 func (p *pipeline) start() {
 	p.stopc = make(chan struct{})
-	p.msgc = make(chan raftpb.Message, pipelineBufSize)
+	p.msgc = make(chan raftpb.Message, pipelineBufSize) //缓存默认64，防止网络抖动瞬间 造成消息丢失
 	p.wg.Add(connPerPipeline)
 	for i := 0; i < connPerPipeline; i++ {
 		go p.handle()
@@ -118,7 +119,7 @@ func (p *pipeline) handle() {
 				p.followerStats.Succ(end.Sub(start))
 			}
 			if isMsgSnap(m) {
-				p.raft.ReportSnapshot(m.To, raft.SnapshotFinish)
+				p.raft.ReportSnapshot(m.To, raft.SnapshotFinish) //向底层的Raft 状态机报告发送成功的信息
 			}
 			sentBytes.WithLabelValues(types.ID(m.To).String()).Add(float64(m.Size()))
 		case <-p.stopc:

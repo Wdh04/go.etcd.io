@@ -152,18 +152,24 @@ func startStreamWriter(lg *zap.Logger, local, id types.ID, status *peerStatus, f
 	return w
 }
 
+//  1.当其他节点主动与当前节点创建连接（即Stream 消息通道底层使用的网络连接)时，该连接实例会写入对应peer.writer.connc 通道,
+//    在streamWriter.run（）方法中会通过该通道获取该连接实例并进行绑定，之后才能开始后续的消息发送。
+//  2.定时发送心跳消息，该心跳消息并不是前面介绍etcd-raft模块时提到的MsgHeartbeat消息，
+//    而是为了防止底层连接超时的消息，后面会详细介绍该消息的处理过程。
+//  3.发送除心跳消息外的其他类型的消息。
 func (cw *streamWriter) run() {
 	var (
-		msgc       chan raftpb.Message
+		msgc chan raftpb.Message //指向当前streamWriter.msgc字段，定时器会定时向该通道发送信号,触发心跳消息的发送,
+		//该心跳消息与Raft的心跳消息有所不同，该心跳消息的主要目的是为了防止连接长时间不用断开的。
 		heartbeatc <-chan time.Time
-		t          streamType
-		enc        encoder
-		flusher    http.Flusher
-		batched    int
+		t          streamType   //用来记录消息的版本信息
+		enc        encoder      //编码器，负责将消息序列化并写入连接的缓冲区
+		flusher    http.Flusher //负责刷新底层连接，将数据真正发送出去
+		batched    int          //当前未Flush消息的个数
 	)
-	tickc := time.NewTicker(ConnReadTimeout / 3)
+	tickc := time.NewTicker(ConnReadTimeout / 3) //发送心跳消息的定时器
 	defer tickc.Stop()
-	unflushed := 0
+	unflushed := 0 //当前未Flush的字节数
 
 	if cw.lg != nil {
 		cw.lg.Info(
@@ -200,7 +206,7 @@ func (cw *streamWriter) run() {
 			}
 			heartbeatc, msgc = nil, nil
 
-		case m := <-msgc:
+		case m := <-msgc: //读出当前节点 peer实体写过来的消息，并通过底层连接发给对端
 			err := enc.encode(&m)
 			if err == nil {
 				unflushed += m.Size()
@@ -231,10 +237,13 @@ func (cw *streamWriter) run() {
 			cw.r.ReportUnreachable(m.To)
 			sentFailures.WithLabelValues(cw.peerID.String()).Inc()
 
+		//当其他节点主动与当前节点创建Stream 消息通道时，会先通过StreamHandler的处理，
+		//StreamHandler会通过attach()方法将连接写入对应peer.writer.connc通道，
+		//而当前的goroutine会通过该通道获取连接，然后开始发送消息
 		case conn := <-cw.connc:
 			cw.mu.Lock()
 			closed := cw.closeUnlocked()
-			t = conn.t
+			t = conn.t // 当前连接所发送的消息的版本，据此创建对应版本的encoder
 			switch conn.t {
 			case streamTypeMsgAppV2:
 				enc = newMsgAppV2Encoder(conn.Writer, cw.fs)
@@ -356,13 +365,13 @@ type streamReader struct {
 	lg *zap.Logger
 
 	peerID types.ID
-	typ    streamType
+	typ    streamType //关联的底层连接使用的协议版本信息。
 
 	tr     *Transport
-	picker *urlPicker
+	picker *urlPicker //用于获取对端节点的可用的URL 。
 	status *peerStatus
-	recvc  chan<- raftpb.Message
-	propc  chan<- raftpb.Message
+	recvc  chan<- raftpb.Message //对端发过来的消息（非MsgProp） 会由stream写入该通道，然后peer.start()启动的后台进程读出来，交给底层的eted-raft模块。
+	propc  chan<- raftpb.Message //与recvc类似  用于MsgProp消息（ 提案:) )
 
 	rl *rate.Limiter // alters the frequency of dial retrial attempts
 
@@ -401,13 +410,14 @@ func (cr *streamReader) run() {
 	}
 
 	for {
-		rc, err := cr.dial(t)
+		rc, err := cr.dial(t) //发个GET请求？  maynotbe:这里发个GET请求为了底层net/http的transport可以hold住一个长连接，后续直接从该返回的io.Reader里读发来的数据？
+		// because:被hold住连接的 goroutine 一旦 io.Reader的内容被读完 也会关闭。
 		if err != nil {
 			if err != errUnsupportedStreamType {
 				cr.status.deactivate(failureType{source: t.String(), action: "dial"}, err.Error())
 			}
 		} else {
-			cr.status.activate()
+			cr.status.activate() //peer连接状态
 			if cr.lg != nil {
 				cr.lg.Info(
 					"established TCP streaming connection with remote peer",
@@ -564,7 +574,7 @@ func (cr *streamReader) stop() {
 func (cr *streamReader) dial(t streamType) (io.ReadCloser, error) {
 	u := cr.picker.pick()
 	uu := u
-	uu.Path = path.Join(t.endpoint(cr.lg), cr.tr.ID.String())
+	uu.Path = path.Join(t.endpoint(cr.lg), cr.tr.ID.String()) //eg. /raft/stream/msgapp/1234567   1234567为transport里的ID，是本节点的ID
 
 	if cr.lg != nil {
 		cr.lg.Debug(

@@ -438,7 +438,7 @@ func (n *node) Propose(ctx context.Context, data []byte) error {
 	return n.stepWait(ctx, pb.Message{Type: pb.MsgProp, Entries: []pb.Entry{{Data: data}}})
 }
 
-//当前节点收到其他节，占、的消息时，会通过Step()方法将消息交给底层封装的raft 实例进行处理
+//当前节点收到其他节点的消息时，会通过Step()方法将消息交给底层封装的raft 实例进行处理
 func (n *node) Step(ctx context.Context, m pb.Message) error {
 	// ignore unexpected local messages receiving over network
 	if IsLocalMsg(m.Type) {
